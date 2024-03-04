@@ -22,8 +22,13 @@ functions to combine models and termination conditions.
 
 import calendar
 import math
-
+from loguru import logger
+import requests
+import json
 from . import interpolate
+
+class ElevationAPIException(Exception):
+    pass
 
 
 _PI_180 = math.pi / 180.0
@@ -133,13 +138,29 @@ def sea_level_termination(t, lat, lng, alt):
     if alt <= 0:
         return True
 
-def make_elevation_data_termination(dataset=None):
+def make_elevation_data_termination(elevation_api_url=None):
     """A termination criteria which terminates integration when the
        altitude goes below ground level, using the elevation data
        in `dataset` (which should be a ruaumoko.Dataset).
     """
     def tc(t, lat, lng, alt):
-        return (dataset.get(lat, lng) > alt) or (alt <= 0)
+        try:
+            elevation_response = requests.get(f"{elevation_api_url}/api/v1/lookup?locations={lat},{lng}")
+            if elevation_response.status_code == 200:
+                try:
+                    position_altitude = elevation_response.json()["results"][0]["elevation"]
+                except json.decoder.JSONDecodeError:
+                    logger.warning(f"Elevation API response malformed")
+                    raise ElevationAPIException("ELEVATION_API MALFORMED")
+            else:
+                logger.warning(f"Elevation API not responding. Is the server running and the url set? Check Elevation API logs if needed")
+                raise ElevationAPIException("ELEVATION API NO RESPONSE")
+        except Exception as e:
+            # Cannot query Ruaumoko - just set launch altitude to 0.
+            logger.debug(e)
+            logger.warning("Defaulting to 0.0 position altitude")
+            position_altitude = 0.0
+        return (position_altitude > alt) or (alt <= 0)
     return tc
 
 def make_time_termination(max_time):
@@ -186,7 +207,7 @@ def make_any_terminator(terminators):
 
 
 def standard_profile(ascent_rate, burst_altitude, descent_rate,
-                     wind_dataset, elevation_dataset, warningcounts):
+                     wind_dataset, elevation_api_url, warningcounts):
     """Make a model chain for the standard high altitude balloon situation of
        ascent at a constant rate followed by burst and subsequent descent
        at terminal velocity under parachute with a predetermined sea level
@@ -204,7 +225,7 @@ def standard_profile(ascent_rate, burst_altitude, descent_rate,
 
     model_down = make_linear_model([make_drag_descent(descent_rate),
                                     make_wind_velocity(wind_dataset, warningcounts)])
-    term_down = make_elevation_data_termination(elevation_dataset)
+    term_down = make_elevation_data_termination(elevation_api_url)
 
     return ((model_up, term_up), (model_down, term_down))
 
@@ -224,7 +245,7 @@ def float_profile(ascent_rate, float_altitude, stop_time, dataset, warningcounts
     return ((model_up, term_up), (model_float, term_float))
 
 
-def reverse_profile(ascent_rate, wind_dataset, elevation_dataset, warningcounts):
+def reverse_profile(ascent_rate, wind_dataset, elevation_api_url, warningcounts):
     """Make a model chain used to estimate a balloon's launch site location, based on
        the current position, and a known ascent rate. This model only works for a balloon
        on ascent.
@@ -242,6 +263,6 @@ def reverse_profile(ascent_rate, wind_dataset, elevation_dataset, warningcounts)
 
     model_down = make_linear_model([make_constant_ascent(abs(ascent_rate)),
                                     make_wind_velocity(wind_dataset, warningcounts)])
-    term_down = make_elevation_data_termination(elevation_dataset)
+    term_down = make_elevation_data_termination(elevation_api_url)
 
     return ((model_up, term_up), (model_down, term_down))

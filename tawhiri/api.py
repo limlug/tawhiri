@@ -23,16 +23,22 @@ from flask import Flask, jsonify, request, g, send_file
 from datetime import datetime
 import time
 import strict_rfc3339
+import requests
+from loguru import logger
 from io import BytesIO
+import json
 
 from tawhiri import solver, models
 from tawhiri.dataset import Dataset as WindDataset
 from tawhiri.warnings import WarningCounts
 from tawhiri.csvformatter import format_csv, fix_data_longitudes
 from tawhiri.kmlformatter import format_kml
-from ruaumoko import Dataset as ElevationDataset
 
 app = Flask(__name__)
+logger.remove()
+logger.add("logs/tawhiri_debug.log", serialize=True, level="DEBUG")
+logger.add("logs/tawhiri_error.log", serialize=True, level="ERROR")
+logger.add("logs/tawhiri_warning.log", serialize=True, level="WARNING")
 
 API_VERSION = 1
 LATEST_DATASET_KEYWORD = "latest"
@@ -42,13 +48,9 @@ PROFILE_REVERSE = "reverse_profile"
 STANDARD_FORMAT = "json"
 
 
-# Util functions ##############################################################
-def ruaumoko_ds():
-    if not hasattr("ruaumoko_ds", "once"):
-        ds_loc = app.config.get('ELEVATION_DATASET', ElevationDataset.default_location)
-        ruaumoko_ds.once = ElevationDataset(ds_loc)
 
-    return ruaumoko_ds.once
+
+# Util functions ##############################################################
 
 def _rfc3339_to_timestamp(dt):
     """
@@ -70,6 +72,9 @@ class APIException(Exception):
     Base API exception.
     """
     status_code = 500
+
+class ElevationAPIException(Exception):
+    pass
 
 
 class RequestException(APIException):
@@ -145,13 +150,26 @@ def parse_request(data):
     # If no launch altitude provided, use Ruaumoko to look it up
     if req['launch_altitude'] is None:
         try:
-            req['launch_altitude'] = ruaumoko_ds().get(req['launch_latitude'],
-                                                       req['launch_longitude'])
-        except Exception:
+            elevation_api_url = app.config.get('ELEVATION_API')
+            elevation_response = requests.get(f"{elevation_api_url}/api/v1/lookup?locations={req['launch_latitude']},{req['launch_longitude']}")
+            if elevation_response.status_code == 200:
+                try:
+                    launch_altitude = elevation_response.json()["results"][0]["elevation"]
+                except json.decoder.JSONDecodeError:
+                    logger.warning(f"Elevation API response malformed")
+                    raise ElevationAPIException("ELEVATION_API MALFORMED")
+            else:
+                logger.warning(f"Elevation API not responding. Is the server running and the url set? Check Elevation API logs if needed")
+                raise ElevationAPIException("ELEVATION API NO RESPONSE")
+        except Exception as e:
             # Cannot query Ruaumoko - just set launch altitude to 0.
+            logger.debug(e)
+            logger.warning("Defaulting to 0.0 for launch altitude")
             req['launch_altitude'] = 0.0
             # raise InternalException("Internal exception experienced whilst " +
             #                         "looking up 'launch_altitude'.")
+        else:
+            req['launch_altitude'] = launch_altitude
 
     # Prediction profile
     req['profile'] = _extract_parameter(data, "profile", str,
@@ -187,38 +205,6 @@ def parse_request(data):
                                         LATEST_DATASET_KEYWORD)
 
     return req
-
-
-def parse_request_ruaumoko(data):
-    """
-    Parse the request.
-    """
-    req = {"version": API_VERSION}
-
-    # Generic fields
-    req['latitude'] = \
-        _extract_parameter(data, "latitude", float,
-                           validator=lambda x: -90 <= x <= 90)
-    req['longitude'] = \
-        _extract_parameter(data, "longitude", float,
-                           validator=lambda x: 0 <= x < 360)
-
-    # Response dict
-    resp = {
-        "request": req,
-    }
-
-    warningcounts = WarningCounts()
-
-    try:
-        resp['altitude'] = ruaumoko_ds().get(req['latitude'],req['longitude'])
-    except Exception:
-        raise InternalException("Internal exception experienced whilst " +
-                                "querying ruaumoko.")
-    
-    resp["warnings"] = warningcounts.to_dict()
-
-    return resp
 
 def parse_request_datasetcheck(data):
     """
@@ -293,6 +279,7 @@ def run_prediction(req):
 
     # Find wind data location
     ds_dir = app.config.get('WIND_DATASET_DIR', WindDataset.DEFAULT_DIRECTORY)
+    elevation_api_url = app.config.get('ELEVATION_API')
 
     # Dataset
     try:
@@ -315,7 +302,7 @@ def run_prediction(req):
                                          req['burst_altitude'],
                                          req['descent_rate'],
                                          tawhiri_ds,
-                                         ruaumoko_ds(),
+                                         elevation_api_url,
                                          warningcounts)
     elif req['profile'] == PROFILE_FLOAT:
         stages = models.float_profile(req['ascent_rate'],
@@ -326,7 +313,7 @@ def run_prediction(req):
     elif req['profile'] == PROFILE_REVERSE:
         stages = models.reverse_profile(req['ascent_rate'],
                                       tawhiri_ds,
-                                      ruaumoko_ds(),
+                                      elevation_api_url,
                                       warningcounts)
     else:
         raise InternalException("No implementation for known profile.")
@@ -432,17 +419,6 @@ def main():
 
 
 
-@app.route('/api/ruaumoko/', methods=['GET'])
-def main_ruaumoko():
-    """
-    Ruaumoko endpoint
-    """
-    g.request_start_time = time.time()
-    response = parse_request_ruaumoko(request.args)
-    g.request_complete_time = time.time()
-    response['metadata'] = _format_request_metadata()
-    return jsonify(response)
-
 @app.route('/api/datasetcheck', methods=['GET'])
 def main_datasetcheck():
     """
@@ -465,6 +441,7 @@ def handle_exception(error):
         "type": type(error).__name__,
         "description": str(error)
     }
+    logger.error(error)
     g.request_complete_time = time.time()
     response['metadata'] = _format_request_metadata()
     return jsonify(response), error.status_code

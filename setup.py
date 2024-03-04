@@ -53,8 +53,6 @@ setup(
     test_suite='nose.collector',
     tests_require=['nose', 'mock', 'Flask-Testing'],
     install_requires=[
-        "magicmemoryview",
-        "ruaumoko",
         "Flask",
         "Flask-Script",
         "strict-rfc3339",
@@ -64,7 +62,7 @@ setup(
         'Development Status :: 4 - Beta',
         'Intended Audience :: Science/Research',
         'License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)',
-        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.10',
         'Topic :: Scientific/Engineering',
     ],
 )
