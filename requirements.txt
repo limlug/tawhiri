@@ -1,16 +1,8 @@
 # Required for setup.py
 Cython
-
-
-# gnuicorn tools
-gunicorn
-eventlet
-gevent
-
 # Documentation
 sphinx
 docutils
-
 # Date parsing
 python-dateutil
 strict_rfc3339
@@ -18,7 +10,4 @@ strict_rfc3339
 flask==3.0.2
 Jinja2
 markupsafe
-
-#Logging
-loguru
 # Ourselves
