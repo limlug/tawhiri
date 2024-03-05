@@ -1,8 +1,9 @@
 # Required for setup.py
 Cython
-magicmemoryview
+
 
 # gnuicorn tools
+gunicorn
 eventlet
 gevent
 
@@ -12,7 +13,7 @@ docutils
 
 # Date parsing
 python-dateutil
-
+strict_rfc3339
 # Flask - pinned
 flask==3.0.2
 Jinja2
@@ -21,4 +22,3 @@ markupsafe
 #Logging
 loguru
 # Ourselves
--e .
